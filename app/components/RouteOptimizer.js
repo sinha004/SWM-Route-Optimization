@@ -613,7 +613,7 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
         )}
 
         {/* Calculate Button */}
-        <button
+        {/* <button
           onClick={calculateOptimalRoute}
           disabled={!garageLocation || !disposalSite || isCalculating}
           className={`w-full py-3 px-4 rounded-xl font-medium text-white shadow-lg
@@ -632,7 +632,12 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
           ) : (
             'Calculate Route'
           )}
-        </button>
+        </button> */}
+        
+        {/* Static Calculate Route Display */}
+        <div className="w-full py-3 px-4 rounded-xl font-medium text-white shadow-lg bg-gradient-to-r from-blue-500 to-blue-600 flex items-center justify-center">
+          Calculate Route
+        </div>
       </div>
     </div>
   );
