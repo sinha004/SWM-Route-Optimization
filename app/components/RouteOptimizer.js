@@ -1,4 +1,10 @@
 import { useState } from 'react';
+import { 
+  optimizeRoute, 
+  buildDistanceMatrix, 
+  nearestNeighbor, 
+  calculateRouteDistance 
+} from '../../utils/routeAlgorithms';
 
 const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalSite }) => {
   const [optimalRoute, setOptimalRoute] = useState([]);
@@ -7,17 +13,70 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
   const [isCalculating, setIsCalculating] = useState(false);
   const [totalDistance, setTotalDistance] = useState(0);
   const [alternativeTotalDistance, setAlternativeTotalDistance] = useState(0);
-  const [selectedRoute, setSelectedRoute] = useState('nearest');
+  const [selectedRoute, setSelectedRoute] = useState('optimized');
   const [showFuelModal, setShowFuelModal] = useState(false);
   const [fuelCost, setFuelCost] = useState(0);
   const [mileage, setMileage] = useState(0);
   const [costSavings, setCostSavings] = useState(0);
+  const [usedAlgorithm, setUsedAlgorithm] = useState('');
+  const [optimizationStats, setOptimizationStats] = useState(null);
+
+  // Track if OSRM API is available (to avoid repeated failed calls)
+  const [osrmAvailable, setOsrmAvailable] = useState(true);
+
+  // Fallback route using straight line and Haversine distance
+  const getFallbackRoute = (start, end) => {
+    const R = 6371; // Earth's radius in km
+    const dLat = (end.lat - start.lat) * Math.PI / 180;
+    const dLon = (end.lng - start.lng) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(start.lat * Math.PI / 180) * Math.cos(end.lat * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const straightLineDistance = R * c;
+    
+    // Estimate road distance as ~1.3x straight line (typical road factor for urban areas)
+    const estimatedRoadDistance = straightLineDistance * 1.3;
+    
+    return {
+      coordinates: [
+        { lat: start.lat, lng: start.lng },
+        { lat: end.lat, lng: end.lng }
+      ],
+      distance: estimatedRoadDistance
+    };
+  };
 
   const getRoadRoute = async (start, end) => {
+    // If OSRM was already found unavailable, use fallback immediately
+    if (!osrmAvailable) {
+      return getFallbackRoute(start, end);
+    }
+
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+
       const response = await fetch(
-        `https://router.project-osrm.org/route/v1/driving/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson`
+        `https://router.project-osrm.org/route/v1/driving/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson`,
+        { signal: controller.signal }
       );
+      
+      clearTimeout(timeoutId);
+      
+      // Check if response is OK
+      if (!response.ok) {
+        console.warn(`OSRM API returned status ${response.status}, using fallback`);
+        return getFallbackRoute(start, end);
+      }
+
+      // Check content type to avoid parsing HTML as JSON
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.warn('OSRM returned non-JSON response, using fallback');
+        return getFallbackRoute(start, end);
+      }
+
       const data = await response.json();
       if (data.routes && data.routes[0]) {
         return {
@@ -28,201 +87,24 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
           distance: data.routes[0].distance / 1000 // Convert meters to kilometers
         };
       }
-      return { coordinates: [], distance: Infinity };
+      return getFallbackRoute(start, end);
     } catch (error) {
-      console.error('Error fetching road route:', error);
-      return { coordinates: [], distance: Infinity };
+      // If fetch fails, mark OSRM as unavailable for this session
+      console.warn('OSRM API unavailable, switching to fallback mode:', error.message);
+      setOsrmAvailable(false);
+      return getFallbackRoute(start, end);
     }
   };
 
   const calculateRoadDistance = async (point1, point2) => {
     try {
       const routeData = await getRoadRoute(point1, point2);
-      return routeData.distance;
+      return routeData.distance || getFallbackRoute(point1, point2).distance;
     } catch (error) {
-      console.error('Error calculating road distance:', error);
-      return Infinity;
+      console.error('Error calculating road distance, using fallback:', error);
+      // Return Haversine fallback distance instead of Infinity
+      return getFallbackRoute(point1, point2).distance;
     }
-  };
-
-  const calculateFloydWarshallRoute = async (redDustbins, start, end) => {
-    const allPoints = [start, ...redDustbins, end];
-    const n = allPoints.length;
-    
-    // Initialize distance matrix with road distances
-    const dist = Array(n).fill().map(() => Array(n).fill(Infinity));
-    const next = Array(n).fill().map(() => Array(n).fill(null));
-    
-    // Fill the distance matrix with actual road distances
-    for (let i = 0; i < n; i++) {
-      dist[i][i] = 0;
-      for (let j = i + 1; j < n; j++) {
-        const roadDist = await calculateRoadDistance(allPoints[i], allPoints[j]);
-        dist[i][j] = roadDist;
-        dist[j][i] = roadDist;
-        next[i][j] = j;
-        next[j][i] = i;
-      }
-    }
-
-    // Floyd-Warshall algorithm
-    for (let k = 0; k < n; k++) {
-      for (let i = 0; i < n; i++) {
-        for (let j = 0; j < n; j++) {
-          if (dist[i][k] + dist[k][j] < dist[i][j]) {
-            dist[i][j] = dist[i][k] + dist[k][j];
-            next[i][j] = next[i][k];
-          }
-        }
-      }
-    }
-
-    // Function to reconstruct path between two points
-    const getPath = (i, j) => {
-      if (next[i][j] === null) return [];
-      const path = [i];
-      while (i !== j) {
-        i = next[i][j];
-        path.push(i);
-      }
-      return path;
-    };
-
-    // Find the optimal path through all red dustbins
-    // We need to visit all points between 1 and n-2 (excluding start and end)
-    const findBestPermutation = () => {
-      let bestDist = Infinity;
-      let bestPath = [];
-      
-      const permutations = (arr) => {
-        if (arr.length <= 1) return [arr];
-        const result = [];
-        for (let i = 0; i < arr.length; i++) {
-          const rest = [...arr.slice(0, i), ...arr.slice(i + 1)];
-          const perms = permutations(rest);
-          perms.forEach(perm => result.push([arr[i], ...perm]));
-        }
-        return result;
-      };
-
-      const indices = Array.from({length: n-2}, (_, i) => i + 1);
-      const allPerms = permutations(indices);
-
-      for (const perm of allPerms) {
-        let totalDist = dist[0][perm[0]];
-        for (let i = 0; i < perm.length - 1; i++) {
-          totalDist += dist[perm[i]][perm[i + 1]];
-        }
-        totalDist += dist[perm[perm.length - 1]][n - 1];
-
-        if (totalDist < bestDist) {
-          bestDist = totalDist;
-          bestPath = [0, ...perm, n - 1];
-        }
-      }
-
-      return { path: bestPath, distance: bestDist };
-    };
-
-    const { path, distance } = findBestPermutation();
-
-    // Reconstruct the complete route with all intermediate points
-    let completeRoute = [];
-    let totalDistance = 0;
-
-    for (let i = 0; i < path.length - 1; i++) {
-      const segment = await getRoadRoute(allPoints[path[i]], allPoints[path[i + 1]]);
-      if (segment.coordinates?.length > 0) {
-        completeRoute = [...completeRoute, ...segment.coordinates];
-      }
-      totalDistance += segment.distance;
-    }
-
-    // Convert indices back to actual points for the result
-    const routePoints = path.slice(1, -1).map(idx => allPoints[idx]);
-
-    return {
-      route: completeRoute,
-      points: routePoints,
-      totalDistance: totalDistance
-    };
-  };
-
-  // Modify the calculateRandomRoute function to ensure longer distance
-  const calculateRandomRoute = async (redDustbins, start, end, minDistance) => {
-    // Shuffle the dustbins randomly
-    const shuffleArray = (array) => {
-      for (let i = array.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [array[i], array[j]] = [array[j], array[i]];
-      }
-      return array;
-    };
-
-    // Try to generate a route with distance > minDistance
-    let attempts = 0;
-    let maxAttempts = 10; // Limit the number of attempts to avoid infinite loop
-    let bestRoute = null;
-    let bestDistance = 0;
-
-    while (attempts < maxAttempts) {
-      // Create random route through dustbins
-      const randomOrderDustbins = shuffleArray([...redDustbins]);
-      
-      // Build the complete route
-      let completeRoute = [];
-      let totalDistance = 0;
-      let currentPoint = start;
-
-      // Add route from garage to first dustbin
-      for (const dustbin of randomOrderDustbins) {
-        const segment = await getRoadRoute(currentPoint, dustbin);
-        if (segment.coordinates?.length > 0) {
-          completeRoute = [...completeRoute, ...segment.coordinates];
-        }
-        totalDistance += segment.distance;
-        currentPoint = dustbin;
-      }
-
-      // Add final route to disposal site
-      const finalSegment = await getRoadRoute(currentPoint, end);
-      if (finalSegment.coordinates?.length > 0) {
-        completeRoute = [...completeRoute, ...finalSegment.coordinates];
-      }
-      totalDistance += finalSegment.distance;
-
-      // If this route is longer than minDistance, use it
-      if (totalDistance > minDistance) {
-        return {
-          route: completeRoute,
-          totalDistance: totalDistance
-        };
-      }
-
-      // Keep track of the longest route found so far
-      if (totalDistance > bestDistance) {
-        bestRoute = {
-          route: completeRoute,
-          totalDistance: totalDistance
-        };
-        bestDistance = totalDistance;
-      }
-
-      attempts++;
-    }
-
-    // If we couldn't find a longer route, add 20% to the distance for display
-    if (bestRoute) {
-      return {
-        route: bestRoute.route,
-        totalDistance: bestRoute.totalDistance * 1.2 // Add 20% to make it visibly longer
-      };
-    }
-
-    return {
-      route: [],
-      totalDistance: minDistance * 1.2
-    };
   };
 
   const calculateOptimalRoute = async () => {
@@ -240,81 +122,87 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
         setOptimalRoute([]);
         setStoredMainRoute(null);
         setStoredAltRoute(null);
+        setOptimizationStats(null);
         onRouteCalculated([], [], garageLocation, disposalSite);
         return;
       }
 
-      // Calculate nearest neighbor route first
-      const mainRoute = await (async () => {
-        let currentLocation = garageLocation;
-        let unvisited = [...redDustbins];
-        let route = [];
-        let completeRoadRoute = [];
-        let totalDistanceKm = 0;
+      // Build array of all points: [garage, ...dustbins, disposal]
+      const allPoints = [garageLocation, ...redDustbins, disposalSite];
+      const n = allPoints.length;
+      const startIdx = 0;
+      const endIdx = n - 1;
 
-        while (unvisited.length > 0) {
-          let nearestIndex = 0;
-          let minDistance = await calculateRoadDistance(currentLocation, unvisited[0]);
-          let nearestRoute = await getRoadRoute(currentLocation, unvisited[0]);
+      // Step 1: Build distance matrix using OSRM (real road distances)
+      console.log('Building distance matrix using OSRM...');
+      const distanceMatrix = await buildDistanceMatrix(allPoints, calculateRoadDistance);
+      
+      // Step 2: Calculate Nearest Neighbor baseline for comparison
+      const nnResult = nearestNeighbor(distanceMatrix, startIdx, endIdx);
+      const nnDistance = nnResult.distance;
 
-          for (let i = 1; i < unvisited.length; i++) {
-            const distance = await calculateRoadDistance(currentLocation, unvisited[i]);
-            if (distance < minDistance) {
-              minDistance = distance;
-              nearestIndex = i;
-              nearestRoute = await getRoadRoute(currentLocation, unvisited[i]);
-            }
-          }
+      // Step 3: Apply advanced optimization (Held-Karp, 2-opt, Simulated Annealing)
+      console.log('Applying advanced route optimization algorithms...');
+      const optimizedResult = optimizeRoute(distanceMatrix, startIdx, endIdx, allPoints);
+      
+      // Verify optimized result has valid route
+      if (!optimizedResult || !optimizedResult.route || !Array.isArray(optimizedResult.route)) {
+        console.error('Invalid optimization result:', optimizedResult);
+        throw new Error('Route optimization failed to produce a valid route');
+      }
+      
+      console.log('Optimized route indices:', optimizedResult.route);
+      
+      // Calculate improvement percentage
+      const improvement = ((nnDistance - optimizedResult.distance) / nnDistance * 100).toFixed(1);
+      
+      setUsedAlgorithm(optimizedResult.algorithm);
+      setOptimizationStats({
+        nnDistance: nnDistance,
+        optimizedDistance: optimizedResult.distance,
+        improvement: improvement,
+        nodesCount: n
+      });
 
-          if (minDistance === Infinity) {
-            throw new Error('Unable to calculate route to some dustbins');
-          }
+      // Step 4: Convert optimized route indices back to waypoints for Leaflet Routing Machine
+      const optimizedPoints = optimizedResult.route.map(idx => allPoints[idx]);
+      
+      // Calculate total distance using the distance matrix (already computed via OSRM/fallback)
+      let totalDistanceKm = 0;
+      for (let i = 0; i < optimizedResult.route.length - 1; i++) {
+        totalDistanceKm += distanceMatrix[optimizedResult.route[i]][optimizedResult.route[i + 1]];
+      }
 
-          totalDistanceKm += minDistance;
-          if (nearestRoute.coordinates?.length > 0) {
-            completeRoadRoute = [...completeRoadRoute, ...nearestRoute.coordinates];
-          }
+      const mainRoute = { 
+        waypoints: optimizedPoints, // Send waypoints instead of detailed coordinates
+        totalDistance: totalDistanceKm,
+        pointOrder: optimizedResult.route.slice(1, -1).map(idx => allPoints[idx]) // Dustbins in order
+      };
 
-          route.push(unvisited[nearestIndex]);
-          currentLocation = unvisited[nearestIndex];
-          unvisited.splice(nearestIndex, 1);
-        }
+      // Step 5: Build Nearest Neighbor route for comparison (alternative route)
+      const nnPoints = nnResult.route.map(idx => allPoints[idx]);
+      let nnTotalDistance = 0;
+      for (let i = 0; i < nnResult.route.length - 1; i++) {
+        nnTotalDistance += distanceMatrix[nnResult.route[i]][nnResult.route[i + 1]];
+      }
 
-        const finalRoute = await getRoadRoute(currentLocation, disposalSite);
-        if (finalRoute.distance === Infinity) {
-          throw new Error('Unable to calculate route to disposal site');
-        }
-
-        totalDistanceKm += finalRoute.distance;
-        if (finalRoute.coordinates?.length > 0) {
-          completeRoadRoute = [...completeRoadRoute, ...finalRoute.coordinates];
-        }
-
-        return { route: completeRoadRoute, totalDistance: totalDistanceKm };
-      })();
-
-      // Now calculate random route with minimum distance constraint
-      const altRoute = await (async () => {
-        const result = await calculateRandomRoute(redDustbins, garageLocation, disposalSite, mainRoute.totalDistance);
-        return {
-          route: result.route,
-          totalDistance: result.totalDistance
-        };
-      })();
+      const altRoute = {
+        waypoints: nnPoints, // Send waypoints for Leaflet Routing Machine
+        totalDistance: nnTotalDistance,
+        pointOrder: nnResult.route.slice(1, -1).map(idx => allPoints[idx])
+      };
 
       // Store both routes in state
       setStoredMainRoute(mainRoute);
       setStoredAltRoute(altRoute);
       setTotalDistance(mainRoute.totalDistance);
       setAlternativeTotalDistance(altRoute.totalDistance);
-      setOptimalRoute(redDustbins);
+      setOptimalRoute(mainRoute.pointOrder);
       
-      // Show the initially selected route
-      const displayRoute = selectedRoute === 'nearest' ? mainRoute.route : altRoute.route;
-      const emptyRoute = [];
+      // Send waypoints to map for Leaflet Routing Machine to render road routes
       onRouteCalculated(
-        selectedRoute === 'nearest' ? displayRoute : emptyRoute,
-        selectedRoute === 'alternative' ? displayRoute : emptyRoute,
+        selectedRoute === 'optimized' ? mainRoute.waypoints : [],
+        selectedRoute === 'nearest-neighbor' ? altRoute.waypoints : [],
         garageLocation,
         disposalSite
       );
@@ -331,58 +219,69 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
 
   const handleRouteSelection = (routeType) => {
     setSelectedRoute(routeType);
-    // Use stored routes instead of undefined mainRoute/altRoute
-    const displayRoute = routeType === 'nearest' ? storedMainRoute?.route : storedAltRoute?.route;
+    // Use stored waypoints for Leaflet Routing Machine
+    const displayWaypoints = routeType === 'optimized' ? storedMainRoute?.waypoints : storedAltRoute?.waypoints;
     const emptyRoute = [];
     onRouteCalculated(
-      routeType === 'nearest' ? displayRoute || [] : emptyRoute,
-      routeType === 'alternative' ? displayRoute || [] : emptyRoute,
+      routeType === 'optimized' ? displayWaypoints || [] : emptyRoute,
+      routeType === 'nearest-neighbor' ? displayWaypoints || [] : emptyRoute,
       garageLocation,
       disposalSite
     );
   };
 
-  // Add this where you want to show the route selection UI
+  // Route selection UI with algorithm information
   const RouteSelector = ({ totalDistance, alternativeTotalDistance }) => (
     <div className="space-y-4">
+      {/* Optimized Route */}
       <div 
-        onClick={() => handleRouteSelection('nearest')}
+        onClick={() => handleRouteSelection('optimized')}
         className={`p-4 rounded-lg cursor-pointer transition-all duration-200 ${
-          selectedRoute === 'nearest' 
-            ? 'bg-blue-500 text-white shadow-lg transform scale-[1.02]' 
-            : 'bg-blue-50 text-gray-700 hover:bg-blue-100'
+          selectedRoute === 'optimized' 
+            ? 'bg-green-500 text-white shadow-lg transform scale-[1.02]' 
+            : 'bg-green-50 text-gray-700 hover:bg-green-100'
         }`}
       >
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
-            <span className="text-xl">🚗</span>
-            <h3 className="font-medium">Nearest Neighbor Route</h3>
+            <span className="text-xl">🎯</span>
+            <h3 className="font-medium">Optimized Route</h3>
           </div>
-          {selectedRoute === 'nearest' && (
+          {selectedRoute === 'optimized' && (
             <span className="text-sm bg-white/20 px-2 py-1 rounded">Active</span>
           )}
         </div>
         <p className="text-sm opacity-90">Distance: {totalDistance.toFixed(2)} km</p>
+        {usedAlgorithm && (
+          <p className="text-xs opacity-75 mt-1">Algorithm: {usedAlgorithm}</p>
+        )}
+        {optimizationStats && optimizationStats.improvement > 0 && (
+          <p className="text-xs mt-1 font-medium">
+            ✨ {optimizationStats.improvement}% better than baseline
+          </p>
+        )}
       </div>
 
+      {/* Nearest Neighbor Route (for comparison) */}
       <div 
-        onClick={() => handleRouteSelection('alternative')}
+        onClick={() => handleRouteSelection('nearest-neighbor')}
         className={`p-4 rounded-lg cursor-pointer transition-all duration-200 ${
-          selectedRoute === 'alternative' 
-            ? 'bg-red-500 text-white shadow-lg transform scale-[1.02]' 
-            : 'bg-red-50 text-gray-700 hover:bg-red-100'
+          selectedRoute === 'nearest-neighbor' 
+            ? 'bg-orange-500 text-white shadow-lg transform scale-[1.02]' 
+            : 'bg-orange-50 text-gray-700 hover:bg-orange-100'
         }`}
       >
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
-            <span className="text-xl">🎲</span>
-            <h3 className="font-medium">Random Route</h3>
+            <span className="text-xl">📍</span>
+            <h3 className="font-medium">Nearest Neighbor (Baseline)</h3>
           </div>
-          {selectedRoute === 'alternative' && (
+          {selectedRoute === 'nearest-neighbor' && (
             <span className="text-sm bg-white/20 px-2 py-1 rounded">Active</span>
           )}
         </div>
         <p className="text-sm opacity-90">Distance: {alternativeTotalDistance.toFixed(2)} km</p>
+        <p className="text-xs opacity-75 mt-1">Simple greedy algorithm for comparison</p>
       </div>
     </div>
   );
@@ -408,20 +307,20 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
             <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
               <span className="text-2xl">⛽</span>
             </div>
-            <h3 className="text-lg font-semibold text-gray-800">Fuel Cost Calculator</h3>
-            <p className="text-gray-600 mt-2">Enter fuel cost and vehicle mileage</p>
+            <h3 className="text-lg font-semibold text-gray-900">Fuel Cost Calculator</h3>
+            <p className="text-gray-700 mt-2">Enter fuel cost and vehicle mileage</p>
           </div>
           
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-800 mb-1">
                 Fuel Cost (₹/litre)
               </label>
               <input
                 type="number"
                 value={tempFuelCost}
                 onChange={(e) => setTempFuelCost(Number(e.target.value))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder:text-gray-500"
                 placeholder="Enter fuel cost"
                 min="0"
                 step="0.01"
@@ -429,14 +328,14 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
             </div>
             
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-800 mb-1">
                 Vehicle Mileage (km/litre)
               </label>
               <input
                 type="number"
                 value={tempMileage}
                 onChange={(e) => setTempMileage(Number(e.target.value))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder:text-gray-500"
                 placeholder="Enter vehicle mileage"
                 min="0"
                 step="0.1"
@@ -499,7 +398,7 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
         {/* Status Section */}
         <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
           <div className="flex items-center justify-between">
-            <span className="text-gray-700 font-medium">Red Dustbins to Collect</span>
+            <span className="text-gray-900 font-medium">Red Dustbins to Collect</span>
             <span className={`text-lg font-bold ${redDustbinsCount > 0 ? 'text-red-600' : 'text-gray-600'}`}>
               {redDustbinsCount}
             </span>
@@ -524,7 +423,7 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
             </div>
           </div>
         ) : (
-          <div className="text-center py-4 text-gray-500">
+          <div className="text-center py-4 text-gray-700">
             {redDustbinsCount === 0 ? (
               <p>No red dustbins to collect</p>
             ) : (
@@ -541,7 +440,7 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
 
         {totalDistance > 0 && (
           <>
-            <div className="text-center text-sm text-gray-600 mb-2">
+            <div className="text-center text-sm text-gray-800 mb-2">
               Click on a route option below to view it on the map
             </div>
             <RouteSelector 
@@ -549,6 +448,41 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
               alternativeTotalDistance={alternativeTotalDistance}
             />
           </>
+        )}
+
+        {/* Algorithm Details Card */}
+        {optimizationStats && (
+          <div className="bg-gradient-to-r from-purple-50 to-blue-50 rounded-xl p-4 border border-purple-200">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xl">🧠</span>
+              <h3 className="font-medium text-gray-900">Algorithm Details</h3>
+            </div>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-gray-700">Algorithm Used:</span>
+                <span className="font-medium text-purple-700">{usedAlgorithm}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-700">Nodes Optimized:</span>
+                <span className="font-medium text-gray-900">{optimizationStats.nodesCount}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-700">Baseline (Nearest Neighbor):</span>
+                <span className="font-medium text-orange-600">{optimizationStats.nnDistance.toFixed(2)} km</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-700">Optimized Distance:</span>
+                <span className="font-medium text-green-600">{optimizationStats.optimizedDistance.toFixed(2)} km</span>
+              </div>
+              {optimizationStats.improvement > 0 && (
+                <div className="mt-2 p-2 bg-green-100 rounded-lg text-center">
+                  <span className="text-green-800 font-bold">
+                    ✨ {optimizationStats.improvement}% Route Improvement
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
         )}
 
         {totalDistance > 0 && (
@@ -570,12 +504,12 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
               {fuelCost > 0 && mileage > 0 ? (
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Fuel Cost:</span>
-                    <span className="font-medium">₹{fuelCost}/litre</span>
+                    <span className="text-gray-800">Fuel Cost:</span>
+                    <span className="font-medium text-gray-900">₹{fuelCost}/litre</span>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">Vehicle Mileage:</span>
-                    <span className="font-medium">{mileage} km/litre</span>
+                    <span className="text-gray-800">Vehicle Mileage:</span>
+                    <span className="font-medium text-gray-900">{mileage} km/litre</span>
                   </div>
                   <div className="mt-4 p-3 bg-green-50 rounded-lg">
                     <div className="flex justify-between items-center">
@@ -585,7 +519,7 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
                   </div>
                 </div>
               ) : (
-                <p className="text-sm text-gray-500 text-center">
+                <p className="text-sm text-gray-700 text-center">
                   Enter fuel cost and mileage to calculate potential savings
                 </p>
               )}
@@ -644,14 +578,14 @@ const LocationCard = ({ title, location, icon, instruction }) => (
   <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
     <div className="flex items-center gap-2 mb-2">
       <span className="text-2xl">{icon}</span>
-      <h3 className="font-medium text-gray-800">{title}</h3>
+      <h3 className="font-medium text-gray-900">{title}</h3>
     </div>
     {location ? (
-      <p className="text-sm text-gray-600">
+      <p className="text-sm text-gray-800">
         ({location.lat.toFixed(4)}, {location.lng.toFixed(4)})
       </p>
     ) : (
-      <p className="text-sm text-gray-500 italic">{instruction}</p>
+      <p className="text-sm text-gray-700 italic">{instruction}</p>
     )}
   </div>
 );
@@ -673,29 +607,29 @@ const RoutePointsCard = ({ route, dustbins, totalDistance }) => {
     <div className="bg-white rounded-xl p-4 border border-gray-200">
       <div className="flex items-center gap-2 mb-3">
         <span className="text-xl">🛣️</span>
-        <h3 className="font-medium">Route Points</h3>
+        <h3 className="font-medium text-gray-900">Route Points</h3>
       </div>
-      <p className="text-sm text-gray-600 mb-3">Total stops in optimized route</p>
+      <p className="text-sm text-gray-800 mb-3">Total stops in optimized route</p>
       
       <div className="grid grid-cols-3 gap-4 text-center">
         <div className="bg-gray-50 p-2 rounded-lg">
-          <p className="text-sm text-gray-600">Start</p>
-          <p className="font-medium text-blue-600">Garage</p>
+          <p className="text-sm text-gray-800">Start</p>
+          <p className="font-medium text-blue-700">Garage</p>
         </div>
         <div className="bg-gray-50 p-2 rounded-lg">
-          <p className="text-sm text-gray-600">Stops</p>
-          <p className="font-medium text-blue-600">{redDustbinsCount}</p>
+          <p className="text-sm text-gray-800">Stops</p>
+          <p className="font-medium text-blue-700">{redDustbinsCount}</p>
         </div>
         <div className="bg-gray-50 p-2 rounded-lg">
-          <p className="text-sm text-gray-600">End</p>
-          <p className="font-medium text-blue-600">Disposal</p>
+          <p className="text-sm text-gray-800">End</p>
+          <p className="font-medium text-blue-700">Disposal</p>
         </div>
       </div>
 
       {totalDistance > 0 && (
         <div className="mt-4 bg-blue-50 p-3 rounded-lg text-center">
-          <p className="text-sm text-gray-600">Total Distance</p>
-          <p className="font-medium text-blue-600">{totalDistance.toFixed(2)} km</p>
+          <p className="text-sm text-gray-800">Total Distance</p>
+          <p className="font-medium text-blue-700">{totalDistance.toFixed(2)} km</p>
         </div>
       )}
     </div>

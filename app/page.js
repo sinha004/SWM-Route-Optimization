@@ -3,6 +3,12 @@
 import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import RouteOptimizer from './components/RouteOptimizer';
+import FleetManager from './components/FleetManager';
+import Analytics from './components/Analytics';
+import CostDashboard from './components/CostDashboard';
+import EnvironmentalDashboard from './components/EnvironmentalDashboard';
+import { saveDustbins, loadDustbins, saveGarageLocation, loadGarageLocation, saveDisposalSites, loadDisposalSites } from '../lib/storage';
+import { WASTE_TYPES } from '../constants/wasteTypes';
 
 const MapWrapper = dynamic(() => import('./components/MapWrapper'), {
   ssr: false,
@@ -16,7 +22,34 @@ export default function Home() {
   const [alternativeRoute, setAlternativeRoute] = useState([]);
   const [garageLocation, setGarageLocation] = useState(null);
   const [disposalSite, setDisposalSite] = useState(null);
+  const [disposalSites, setDisposalSites] = useState([]); // Multiple disposal sites for different waste types
   const [isLoading, setIsLoading] = useState(false);
+  const [showBinUpdateModal, setShowBinUpdateModal] = useState(false);
+  const [selectedBinForUpdate, setSelectedBinForUpdate] = useState(null);
+  const [vehicles, setVehicles] = useState([]);
+  const [activeTab, setActiveTab] = useState('overview'); // overview, analytics, cost, environment
+  const [showResetModal, setShowResetModal] = useState(false);
+
+  // Function to clear all localStorage and reset the app
+  const handleResetApp = () => {
+    // Clear all app-related localStorage keys
+    Object.keys(localStorage)
+      .filter(key => key.startsWith('swm_'))
+      .forEach(key => localStorage.removeItem(key));
+    
+    // Reset all state
+    setDustbins([]);
+    setRoute([]);
+    setAlternativeRoute([]);
+    setGarageLocation(null);
+    setDisposalSite(null);
+    setDisposalSites([]);
+    setVehicles([]);
+    setShowResetModal(false);
+    
+    // Optionally reload the page for a complete fresh start
+    window.location.reload();
+  };
 
   const toggleDustbinStatus = (id) => {
       setDustbins(prevDustbins => {
@@ -31,27 +64,69 @@ export default function Home() {
   };
 
   const handleDustbinAdd = (newDustbin) => {
+    // Enhanced dustbin with additional properties
+    const enhancedDustbin = {
+      ...newDustbin,
+      fillLevel: 0, // 0-100%
+      wasteType: 'general', // default waste type
+      weight: 0, // kg
+      lastUpdated: new Date().toISOString(),
+      collectionHistory: [],
+      status: 'green' // Will turn red when fillLevel > 80
+    };
 
     setDustbins(prevDustbins => {
-      const updatedDustbins = [...prevDustbins, newDustbin];
+      const updatedDustbins = [...prevDustbins, enhancedDustbin];
+      saveDustbins(updatedDustbins); // Persist to localStorage
       return updatedDustbins;
     });
     setRoute([]);
   };
 
   const handleDustbinRemove = (id) => {
-    setDustbins(prevDustbins => prevDustbins.filter(dustbin => dustbin.id !== id));
+    setDustbins(prevDustbins => {
+      const updated = prevDustbins.filter(dustbin => dustbin.id !== id);
+      saveDustbins(updated); // Persist to localStorage
+      return updated;
+    });
+    setRoute([]);
+  };
+
+  const handleDustbinUpdate = (id, updates) => {
+    setDustbins(prevDustbins => {
+      const updatedDustbins = prevDustbins.map(dustbin => {
+        if (dustbin.id === id) {
+          const updated = {
+            ...dustbin,
+            ...updates,
+            lastUpdated: new Date().toISOString(),
+            // Auto-update status based on fill level
+            status: updates.fillLevel >= 80 ? 'red' : 'green'
+          };
+          return updated;
+        }
+        return dustbin;
+      });
+      saveDustbins(updatedDustbins); // Persist to localStorage
+      return updatedDustbins;
+    });
     setRoute([]);
   };
 
   const handleGarageLocationSet = (location) => {
     setGarageLocation(location);
+    saveGarageLocation(location); // Persist to localStorage
     setRoute([]);
   };
 
   const handleDisposalSiteSet = (location) => {
     setDisposalSite(location);
     setRoute([]);
+  };
+
+  const handleDisposalSitesUpdate = (sites) => {
+    setDisposalSites(sites);
+    saveDisposalSites(sites); // Persist to localStorage
   };
 
   const handleRouteCalculated = (newRoute, newAlternativeRoute, garage, disposal) => {
@@ -61,19 +136,116 @@ export default function Home() {
     if (disposal) setDisposalSite(disposal);
   };
 
+  // Load persisted data on mount
   useEffect(() => {
+    const loadedDustbins = loadDustbins();
+    const loadedGarage = loadGarageLocation();
+    const loadedDisposalSites = loadDisposalSites();
+    
+    if (loadedDustbins.length > 0) {
+      setDustbins(loadedDustbins);
+    }
+    if (loadedGarage) {
+      setGarageLocation(loadedGarage);
+    }
+    if (loadedDisposalSites.length > 0) {
+      setDisposalSites(loadedDisposalSites);
+      // Set first disposal site as default if available
+      if (!disposalSite && loadedDisposalSites.length > 0) {
+        setDisposalSite(loadedDisposalSites[0]);
+      }
+    }
   }, []);
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50">
       <div className="container mx-auto px-4 py-8">
-        <h1 className="text-4xl font-bold text-center mb-8 text-gray-800 tracking-tight">
-          <span className="bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-green-600">
-            IIT Dhanbad Waste Management System
-          </span>
-        </h1>
-        
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="flex items-center justify-center gap-4 mb-8">
+          <h1 className="text-4xl font-bold text-center text-gray-800 tracking-tight">
+            <span className="bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-green-600">
+              Smart Waste Management System
+            </span>
+          </h1>
+          <button
+            onClick={() => setShowResetModal(true)}
+            className="p-2 bg-white hover:bg-red-50 text-gray-600 hover:text-red-600 rounded-lg shadow-md border border-gray-200 hover:border-red-300 transition-all duration-200 group"
+            title="Reset Application"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Reset Confirmation Modal */}
+        {showResetModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-md mx-4 transform transition-all">
+              <div className="text-center">
+                <div className="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-red-100 mb-4">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-gray-900 mb-2">Reset Application?</h3>
+                <p className="text-gray-600 mb-6">
+                  This will clear all saved data including dustbins, vehicles, routes, garage location, and disposal sites. This action cannot be undone.
+                </p>
+                <div className="flex gap-3 justify-center">
+                  <button
+                    onClick={() => setShowResetModal(false)}
+                    className="px-6 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleResetApp}
+                    className="px-6 py-2.5 bg-red-600 hover:bg-red-700 text-white font-medium rounded-lg transition-colors flex items-center gap-2"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Reset Everything
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tab Navigation */}
+        <div className="flex justify-center mb-8">
+          <div className="inline-flex bg-white rounded-xl shadow-lg p-1 border border-gray-200">
+            <TabButton
+              label="Overview"
+              icon="🏠"
+              active={activeTab === 'overview'}
+              onClick={() => setActiveTab('overview')}
+            />
+            <TabButton
+              label="Analytics"
+              icon="📊"
+              active={activeTab === 'analytics'}
+              onClick={() => setActiveTab('analytics')}
+            />
+            <TabButton
+              label="Costs"
+              icon="💰"
+              active={activeTab === 'cost'}
+              onClick={() => setActiveTab('cost')}
+            />
+            <TabButton
+              label="Environment"
+              icon="🌍"
+              active={activeTab === 'environment'}
+              onClick={() => setActiveTab('environment')}
+            />
+          </div>
+        </div>
+
+        {/* Tab Content */}
+        {activeTab === 'overview' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2">
             <div className="bg-white p-4 rounded-xl shadow-lg">
               <MapWrapper 
@@ -81,6 +253,7 @@ export default function Home() {
                 onToggleStatus={toggleDustbinStatus}
                 onDustbinAdd={handleDustbinAdd}
                 onDustbinRemove={handleDustbinRemove}
+                onDustbinUpdate={handleDustbinUpdate}
                 route={route}
                 alternativeRoute={alternativeRoute}
                 garageLocation={garageLocation}
@@ -92,12 +265,17 @@ export default function Home() {
           </div>
           
           <div className="lg:col-span-1 space-y-6">
+            {/* Fleet Manager */}
+            <FleetManager onVehiclesChange={setVehicles} />
+            
+            {/* Route Optimizer */}
             <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-gray-100/50 hover:shadow-2xl transition-all duration-300">
               <RouteOptimizer 
                 dustbins={dustbins}
                 onRouteCalculated={handleRouteCalculated}
                 garageLocation={garageLocation}
                 disposalSite={disposalSite}
+                vehicles={vehicles}
               />
             </div>
             
@@ -107,7 +285,7 @@ export default function Home() {
                   <div className="w-1 h-6 bg-green-500 rounded-full mr-3"></div>
                   <h3 className="text-xl font-semibold text-gray-800">System Status</h3>
                 </div>
-                <p className="text-gray-600 text-sm mb-6">Real-time monitoring of waste management operations</p>
+                <p className="text-gray-700 text-sm mb-6">Real-time monitoring of waste management operations</p>
               </div>
               
               <div className="grid grid-cols-2 gap-4 mb-6">
@@ -118,11 +296,21 @@ export default function Home() {
                   trend={dustbins.length > 0 ? '+' : ''}
                 />
                 <StatCard 
-                  label="Red Dustbins" 
-                  value={dustbins.filter(d => d.status === 'red').length}
+                  label="Needs Collection" 
+                  value={dustbins.filter(d => d.fillLevel >= 80 || d.status === 'red').length}
                   icon="🔴"
                   trend="!"
                   urgency={true}
+                />
+                <StatCard 
+                  label="Avg Fill Level" 
+                  value={`${Math.round(dustbins.reduce((sum, d) => sum + (d.fillLevel || 0), 0) / (dustbins.length || 1))}%`}
+                  icon="📊"
+                />
+                <StatCard 
+                  label="Total Weight" 
+                  value={`${(dustbins.reduce((sum, d) => sum + (d.weight || 0), 0) / 1000).toFixed(1)}t`}
+                  icon="⚖️"
                 />
               </div>
               
@@ -144,10 +332,47 @@ export default function Home() {
             </div>
           </div>
         </div>
+        )}
+
+        {/* Analytics Tab */}
+        {activeTab === 'analytics' && (
+          <div className="space-y-6">
+            <Analytics dustbins={dustbins} />
+          </div>
+        )}
+
+        {/* Cost Tab */}
+        {activeTab === 'cost' && (
+          <div className="space-y-6">
+            <CostDashboard vehicles={vehicles} />
+          </div>
+        )}
+
+        {/* Environment Tab */}
+        {activeTab === 'environment' && (
+          <div className="space-y-6">
+            <EnvironmentalDashboard dustbins={dustbins} vehicles={vehicles} />
+          </div>
+        )}
       </div>
     </main>
   );
 }
+
+// Tab Button Component
+const TabButton = ({ label, icon, active, onClick }) => (
+  <button
+    onClick={onClick}
+    className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-all duration-200 ${
+      active
+        ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md'
+        : 'text-gray-800 hover:bg-gray-100'
+    }`}
+  >
+    <span className="text-xl">{icon}</span>
+    <span>{label}</span>
+  </button>
+);
 
 // New StatCard component for key metrics
 const StatCard = ({ label, value, icon, trend, urgency = false }) => (
@@ -158,14 +383,14 @@ const StatCard = ({ label, value, icon, trend, urgency = false }) => (
       <span className="text-2xl">{icon}</span>
       {trend && (
         <span className={`text-sm font-bold ${
-          urgency && value > 0 ? 'text-red-500' : 'text-green-500'
+          urgency && value > 0 ? 'text-red-600' : 'text-green-600'
         }`}>
           {trend}
         </span>
       )}
     </div>
     <div className="mt-2">
-      <h4 className="text-sm text-gray-600">{label}</h4>
+      <h4 className="text-sm text-gray-800">{label}</h4>
       <p className={`text-2xl font-bold ${
         urgency && value > 0 ? 'text-red-700' : 'text-blue-700'
       }`}>

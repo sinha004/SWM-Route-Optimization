@@ -5,12 +5,15 @@ import {
   TileLayer,
   Marker,
   Popup,
-  Polyline,
   useMapEvents,
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { useState, useEffect } from "react";
+import { WASTE_TYPES, getAllWasteTypes, getWasteTypeIcon } from "../../constants/wasteTypes";
+import { getFillLevelColor } from "../../utils/calculations";
+import BinUpdateModal from "./BinUpdateModal";
+import RoadRoute from "./RoadRoute";
 
 const DefaultIcon = L.icon({
   iconUrl:
@@ -85,6 +88,7 @@ const Map = ({
   onToggleStatus,
   onDustbinAdd,
   onDustbinRemove,
+  onDustbinUpdate,
   route = [],
   alternativeRoute = [],
   garageLocation,
@@ -97,6 +101,8 @@ const Map = ({
   const [clickMode, setClickMode] = useState("dustbin");
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [clickedLocation, setClickedLocation] = useState(null);
+  const [showBinUpdateModal, setShowBinUpdateModal] = useState(false);
+  const [selectedBin, setSelectedBin] = useState(null);
 
   useEffect(() => {
     setMounted(true);
@@ -156,7 +162,7 @@ const Map = ({
       {/* Control Panel */}
       <div className="absolute top-4 right-4 z-[1000]">
         <div className="bg-white/90 backdrop-blur-sm p-3 rounded-xl shadow-lg border border-gray-100">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3 px-2">Map Controls</h3>
+          <h3 className="text-sm font-semibold text-gray-900 mb-3 px-2">Map Controls</h3>
           <div className="flex flex-col gap-2">
             <MapButton
               active={clickMode === "dustbin"}
@@ -192,8 +198,8 @@ const Map = ({
                   {clickMode === "dustbin" ? "🗑️" : clickMode === "garage" ? "🏢" : "📍"}
                 </span>
               </div>
-              <h3 className="text-lg font-semibold text-gray-800">Confirm Location</h3>
-              <p className="text-gray-600 mt-2">
+              <h3 className="text-lg font-semibold text-gray-900">Confirm Location</h3>
+              <p className="text-gray-700 mt-2">
                 Add {clickMode === "dustbin" ? "a dustbin" : clickMode === "garage" ? "the garage" : "the disposal site"} at
                 ({clickedLocation?.lat.toFixed(4)}, {clickedLocation?.lng.toFixed(4)})?
               </p>
@@ -216,10 +222,22 @@ const Map = ({
         </div>
       )}
 
+      {/* Bin Update Modal */}
+      {showBinUpdateModal && selectedBin && (
+        <BinUpdateModal
+          bin={selectedBin}
+          onClose={() => {
+            setShowBinUpdateModal(false);
+            setSelectedBin(null);
+          }}
+          onUpdate={onDustbinUpdate}
+        />
+      )}
+
       {/* Map Container */}
       <MapContainer
-        center={[23.8143, 86.4412]}
-        zoom={15}
+        center={[30.7333, 76.7794]}
+        zoom={14}
         style={{ height: "100%", width: "100%" }}
         whenCreated={setMap}
         className="z-0"
@@ -279,62 +297,101 @@ const Map = ({
           </Marker>
         )}
 
-        {route.length > 0 && (
-          <Polyline
-            positions={route.map(point => [point.lat, point.lng])}
+        {/* Road-based Route using OSRM */}
+        {route && route.length >= 2 && (
+          <RoadRoute 
+            waypoints={route} 
             color="#3388ff"
-            weight={4}
-            opacity={0.7}
+            weight={6}
+            opacity={0.8}
           />
         )}
 
-        {alternativeRoute.length > 0 && (
-          <Polyline
-            positions={alternativeRoute.map(point => [point.lat, point.lng])}
-            color="#ff3333"
-            weight={4}
+        {/* Alternative Route */}
+        {alternativeRoute.length >= 2 && (
+          <RoadRoute 
+            waypoints={alternativeRoute} 
+            color="#ff6b35"
+            weight={5}
             opacity={0.7}
           />
         )}
 
         {dustbins &&
-          dustbins.map((dustbin) => (
-            <Marker
-              key={dustbin.id}
-              position={[dustbin.lat, dustbin.lng]}
-              icon={dustbin.status === "red" ? redIcon : greenIcon}
-            >
-              <Popup>
-                <div className="text-center">
-                  <p className="font-bold">Dustbin #{dustbin.id}</p>
-                  <p>
-                    Status:{" "}
-                    {dustbin.status === "red" ? "Needs Collection" : "Clean"}
-                  </p>
-                  <div className="flex flex-col gap-2 mt-2">
-                    <button
-                      onClick={() => onToggleStatus(dustbin.id)}
-                      className={`px-3 py-1 rounded ${
-                        dustbin.status === "red" ? "bg-red-500" : "bg-green-500"
-                      } text-white hover:opacity-90`}
-                    >
-                      Toggle Status
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDustbinRemove(dustbin.id);
-                        map?.closePopup();
-                      }}
-                      className="px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600"
-                    >
-                      Remove Dustbin
-                    </button>
+          dustbins.map((dustbin) => {
+            const fillLevel = dustbin.fillLevel || 0;
+            const wasteType = WASTE_TYPES[dustbin.wasteType?.toUpperCase()] || WASTE_TYPES.GENERAL;
+            // Auto-determine icon based on fill level
+            const binIcon = fillLevel >= 80 ? redIcon : greenIcon;
+            
+            return (
+              <Marker
+                key={dustbin.id}
+                position={[dustbin.lat, dustbin.lng]}
+                icon={binIcon}
+              >
+                <Popup>
+                  <div className="min-w-[200px]">
+                    <div className="text-center mb-3">
+                      <div className="flex items-center justify-center gap-2 mb-2">
+                        <span className="text-2xl">{wasteType.icon}</span>
+                        <p className="font-bold text-lg">Bin #{dustbin.id}</p>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2 text-sm mb-3">
+                      <div className="flex justify-between">
+                        <span className="text-gray-700">Fill Level:</span>
+                        <span className="font-semibold" style={{ color: getFillLevelColor(fillLevel) }}>
+                          {fillLevel}%
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-700">Waste Type:</span>
+                        <span className="font-semibold text-gray-900">{wasteType.name}</span>
+                      </div>
+                      {dustbin.weight > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-700">Weight:</span>
+                          <span className="font-semibold text-gray-900">{dustbin.weight} kg</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between">
+                        <span className="text-gray-700">Status:</span>
+                        <span className={`font-semibold ${fillLevel >= 80 ? 'text-red-600' : 'text-green-600'}`}>
+                          {fillLevel >= 80 ? "Needs Collection" : "Clean"}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    <div className="flex flex-col gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedBin(dustbin);
+                          setShowBinUpdateModal(true);
+                          map?.closePopup();
+                        }}
+                        className="px-3 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors font-medium"
+                      >
+                        📝 Update Bin
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDustbinRemove(dustbin.id);
+                          map?.closePopup();
+                        }}
+                        className="px-3 py-2 bg-red-500 text-white rounded hover:bg-red-600 transition-colors font-medium"
+                      >
+                        🗑️ Remove Bin
+                      </button>
+                    </div>
                   </div>
-                </div>
-              </Popup>
-            </Marker>
-          ))}
+                </Popup>
+              </Marker>
+            );
+          })}
       </MapContainer>
     </div>
   );
