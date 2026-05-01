@@ -4,11 +4,14 @@ import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import RouteOptimizer from './components/RouteOptimizer';
 import FleetManager from './components/FleetManager';
-import Analytics from './components/Analytics';
-import CostDashboard from './components/CostDashboard';
-import EnvironmentalDashboard from './components/EnvironmentalDashboard';
 import { saveDustbins, loadDustbins, saveGarageLocation, loadGarageLocation, saveDisposalSites, loadDisposalSites } from '../lib/storage';
 import { WASTE_TYPES } from '../constants/wasteTypes';
+import { 
+  calculateFuelCost, 
+  calculateCO2Emissions,
+  JHARKHAND_FUEL_PRICES,
+  CO2_EMISSION_FACTORS
+} from '../constants/vehicleTypes';
 
 const MapWrapper = dynamic(() => import('./components/MapWrapper'), {
   ssr: false,
@@ -27,8 +30,8 @@ export default function Home() {
   const [showBinUpdateModal, setShowBinUpdateModal] = useState(false);
   const [selectedBinForUpdate, setSelectedBinForUpdate] = useState(null);
   const [vehicles, setVehicles] = useState([]);
-  const [activeTab, setActiveTab] = useState('overview'); // overview, analytics, cost, environment
   const [showResetModal, setShowResetModal] = useState(false);
+  const [routeStats, setRouteStats] = useState(null); // Persists until reset
 
   // Function to clear all localStorage and reset the app
   const handleResetApp = () => {
@@ -45,6 +48,7 @@ export default function Home() {
     setDisposalSite(null);
     setDisposalSites([]);
     setVehicles([]);
+    setRouteStats(null);
     setShowResetModal(false);
     
     // Optionally reload the page for a complete fresh start
@@ -136,6 +140,10 @@ export default function Home() {
     if (disposal) setDisposalSite(disposal);
   };
 
+  const handleRouteStatsChange = (stats) => {
+    setRouteStats(stats);
+  };
+
   // Load persisted data on mount
   useEffect(() => {
     const loadedDustbins = loadDustbins();
@@ -213,39 +221,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab Navigation */}
-        <div className="flex justify-center mb-8">
-          <div className="inline-flex bg-white rounded-xl shadow-lg p-1 border border-gray-200">
-            <TabButton
-              label="Overview"
-              icon="🏠"
-              active={activeTab === 'overview'}
-              onClick={() => setActiveTab('overview')}
-            />
-            <TabButton
-              label="Analytics"
-              icon="📊"
-              active={activeTab === 'analytics'}
-              onClick={() => setActiveTab('analytics')}
-            />
-            <TabButton
-              label="Costs"
-              icon="💰"
-              active={activeTab === 'cost'}
-              onClick={() => setActiveTab('cost')}
-            />
-            <TabButton
-              label="Environment"
-              icon="🌍"
-              active={activeTab === 'environment'}
-              onClick={() => setActiveTab('environment')}
-            />
-          </div>
-        </div>
-
-        {/* Tab Content */}
-        {activeTab === 'overview' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Main Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2">
             <div className="bg-white p-4 rounded-xl shadow-lg">
               <MapWrapper 
@@ -262,6 +239,133 @@ export default function Home() {
                 onDisposalSiteSet={handleDisposalSiteSet}
               />
             </div>
+
+            {/* Fuel Cost & CO₂ Emissions - Below the Map, persists until reset */}
+            {routeStats && (() => {
+              const activeDistance = routeStats.selectedRoute === 'optimized' 
+                ? routeStats.totalDistance 
+                : routeStats.alternativeTotalDistance;
+              const fuelData = calculateFuelCost(activeDistance, routeStats.selectedVehicleType, routeStats.selectedFuelType);
+              const co2Data = calculateCO2Emissions(activeDistance, routeStats.selectedVehicleType, routeStats.selectedFuelType);
+              
+              // Savings comparison
+              const altFuelData = calculateFuelCost(routeStats.alternativeTotalDistance, routeStats.selectedVehicleType, routeStats.selectedFuelType);
+              const altCO2Data = calculateCO2Emissions(routeStats.alternativeTotalDistance, routeStats.selectedVehicleType, routeStats.selectedFuelType);
+              const optFuelData = calculateFuelCost(routeStats.totalDistance, routeStats.selectedVehicleType, routeStats.selectedFuelType);
+              const optCO2Data = calculateCO2Emissions(routeStats.totalDistance, routeStats.selectedVehicleType, routeStats.selectedFuelType);
+              const fuelSavings = altFuelData.totalCost - optFuelData.totalCost;
+              const co2Savings = altCO2Data.totalEmissions - optCO2Data.totalEmissions;
+
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+                  {/* Fuel Cost Panel */}
+                  <div className="bg-gradient-to-br from-orange-50 to-amber-50 rounded-xl p-5 border border-orange-200 shadow-lg">
+                    <div className="flex items-center gap-2 mb-4">
+                      <span className="text-2xl">⛽</span>
+                      <div>
+                        <h3 className="font-bold text-gray-900 text-lg">Fuel Cost Analysis</h3>
+                        <p className="text-xs text-gray-700">Based on Jharkhand fuel prices (as of {JHARKHAND_FUEL_PRICES.lastUpdated})</p>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="bg-white rounded-lg p-3 border border-orange-100">
+                          <p className="text-xs text-gray-700 mb-1">Fuel Price</p>
+                          <p className="text-lg font-bold text-orange-700">₹{fuelData.fuelPrice.toFixed(2)}<span className="text-xs font-normal text-gray-600">/{fuelData.unit === 'kWh' ? 'kWh' : 'L'}</span></p>
+                          <p className="text-xs text-gray-600 capitalize">{fuelData.fuelType}</p>
+                        </div>
+                        <div className="bg-white rounded-lg p-3 border border-orange-100">
+                          <p className="text-xs text-gray-700 mb-1">Fuel Required</p>
+                          <p className="text-lg font-bold text-orange-700">{fuelData.fuelConsumed.toFixed(2)}<span className="text-xs font-normal text-gray-600"> {fuelData.unit}</span></p>
+                          <p className="text-xs text-gray-600">for {activeDistance.toFixed(2)} km</p>
+                        </div>
+                      </div>
+                      
+                      <div className="bg-white rounded-lg p-4 border-2 border-orange-300">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-800 font-medium">Total Fuel Cost</span>
+                          <span className="text-2xl font-bold text-orange-700">₹{fuelData.totalCost.toFixed(2)}</span>
+                        </div>
+                      </div>
+
+                      {fuelSavings > 0 && (
+                        <div className="bg-green-50 rounded-lg p-3 border border-green-200">
+                          <div className="flex justify-between items-center">
+                            <div>
+                              <span className="text-green-800 font-medium text-sm">💰 Savings vs Baseline</span>
+                              <p className="text-xs text-green-700">Optimized route saves fuel</p>
+                            </div>
+                            <span className="text-lg font-bold text-green-700">₹{fuelSavings.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* CO₂ Emissions Panel */}
+                  <div className="bg-gradient-to-br from-teal-50 to-green-50 rounded-xl p-5 border border-teal-200 shadow-lg">
+                    <div className="flex items-center gap-2 mb-4">
+                      <span className="text-2xl">🌍</span>
+                      <div>
+                        <h3 className="font-bold text-gray-900 text-lg">CO₂ Emissions</h3>
+                        <p className="text-xs text-gray-700">IPCC 2006 / India GHG Program emission factors</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="bg-white rounded-lg p-3 border border-teal-100">
+                          <p className="text-xs text-gray-700 mb-1">Emission Factor</p>
+                          <p className="text-lg font-bold text-teal-700">{co2Data.emissionFactor.toFixed(2)}<span className="text-xs font-normal text-gray-600"> kg/L</span></p>
+                          <p className="text-xs text-gray-600 capitalize">{co2Data.fuelType} (IPCC)</p>
+                        </div>
+                        <div className="bg-white rounded-lg p-3 border border-teal-100">
+                          <p className="text-xs text-gray-700 mb-1">Fuel Burned</p>
+                          <p className="text-lg font-bold text-teal-700">{co2Data.fuelConsumed.toFixed(2)}<span className="text-xs font-normal text-gray-600"> litres</span></p>
+                          <p className="text-xs text-gray-600">for {activeDistance.toFixed(2)} km</p>
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-lg p-4 border-2 border-teal-300">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-800 font-medium">Total CO₂ Emitted</span>
+                          <span className="text-2xl font-bold text-teal-700">{co2Data.totalEmissions.toFixed(2)} <span className="text-sm font-normal">kg</span></span>
+                        </div>
+                        <p className="text-xs text-gray-600 mt-1">Formula: {co2Data.fuelConsumed.toFixed(2)} L × {co2Data.emissionFactor} kg/L = {co2Data.totalEmissions.toFixed(2)} kg CO₂</p>
+                      </div>
+
+                      {co2Data.totalEmissions > 0 && (
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="bg-green-50 rounded-lg p-3 border border-green-200 text-center">
+                            <p className="text-xl font-bold text-green-700">{Math.ceil(co2Data.equivalents.treeDaysAbsorption)}</p>
+                            <p className="text-xs text-green-800">tree-days to offset</p>
+                            <p className="text-[10px] text-gray-600">1 tree ≈ 0.06 kg CO₂/day</p>
+                          </div>
+                          <div className="bg-blue-50 rounded-lg p-3 border border-blue-200 text-center">
+                            <p className="text-xl font-bold text-blue-700">{co2Data.equivalents.carKmEquivalent.toFixed(1)} km</p>
+                            <p className="text-xs text-blue-800">passenger car equivalent</p>
+                            <p className="text-[10px] text-gray-600">avg car: 0.21 kg CO₂/km</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {co2Savings > 0 && (
+                        <div className="bg-green-50 rounded-lg p-3 border border-green-200">
+                          <div className="flex justify-between items-center">
+                            <div>
+                              <span className="text-green-800 font-medium text-sm">🌱 CO₂ Saved vs Baseline</span>
+                              <p className="text-xs text-green-700">Route optimization reduces emissions</p>
+                            </div>
+                            <span className="text-lg font-bold text-green-700">{co2Savings.toFixed(2)} kg</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
           
           <div className="lg:col-span-1 space-y-6">
@@ -276,6 +380,7 @@ export default function Home() {
                 garageLocation={garageLocation}
                 disposalSite={disposalSite}
                 vehicles={vehicles}
+                onRouteStatsChange={handleRouteStatsChange}
               />
             </div>
             
@@ -332,47 +437,10 @@ export default function Home() {
             </div>
           </div>
         </div>
-        )}
-
-        {/* Analytics Tab */}
-        {activeTab === 'analytics' && (
-          <div className="space-y-6">
-            <Analytics dustbins={dustbins} />
-          </div>
-        )}
-
-        {/* Cost Tab */}
-        {activeTab === 'cost' && (
-          <div className="space-y-6">
-            <CostDashboard vehicles={vehicles} />
-          </div>
-        )}
-
-        {/* Environment Tab */}
-        {activeTab === 'environment' && (
-          <div className="space-y-6">
-            <EnvironmentalDashboard dustbins={dustbins} vehicles={vehicles} />
-          </div>
-        )}
       </div>
     </main>
   );
 }
-
-// Tab Button Component
-const TabButton = ({ label, icon, active, onClick }) => (
-  <button
-    onClick={onClick}
-    className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-all duration-200 ${
-      active
-        ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md'
-        : 'text-gray-800 hover:bg-gray-100'
-    }`}
-  >
-    <span className="text-xl">{icon}</span>
-    <span>{label}</span>
-  </button>
-);
 
 // New StatCard component for key metrics
 const StatCard = ({ label, value, icon, trend, urgency = false }) => (

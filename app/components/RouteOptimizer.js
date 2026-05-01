@@ -5,8 +5,15 @@ import {
   nearestNeighbor, 
   calculateRouteDistance 
 } from '../../utils/routeAlgorithms';
+import { 
+  calculateFuelCost, 
+  calculateCO2Emissions, 
+  getAllVehicleTypes,
+  JHARKHAND_FUEL_PRICES,
+  CO2_EMISSION_FACTORS
+} from '../../constants/vehicleTypes';
 
-const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalSite }) => {
+const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalSite, vehicles, onRouteStatsChange }) => {
   const [optimalRoute, setOptimalRoute] = useState([]);
   const [storedMainRoute, setStoredMainRoute] = useState(null);
   const [storedAltRoute, setStoredAltRoute] = useState(null);
@@ -14,12 +21,10 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
   const [totalDistance, setTotalDistance] = useState(0);
   const [alternativeTotalDistance, setAlternativeTotalDistance] = useState(0);
   const [selectedRoute, setSelectedRoute] = useState('optimized');
-  const [showFuelModal, setShowFuelModal] = useState(false);
-  const [fuelCost, setFuelCost] = useState(0);
-  const [mileage, setMileage] = useState(0);
-  const [costSavings, setCostSavings] = useState(0);
   const [usedAlgorithm, setUsedAlgorithm] = useState('');
   const [optimizationStats, setOptimizationStats] = useState(null);
+  const [selectedVehicleType, setSelectedVehicleType] = useState('standard');
+  const [selectedFuelType, setSelectedFuelType] = useState('diesel');
 
   // Track if OSRM API is available (to avoid repeated failed calls)
   const [osrmAvailable, setOsrmAvailable] = useState(true);
@@ -207,6 +212,18 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
         disposalSite
       );
 
+      // Send route stats to parent for persistent display
+      if (onRouteStatsChange) {
+        onRouteStatsChange({
+          totalDistance: mainRoute.totalDistance,
+          alternativeTotalDistance: altRoute.totalDistance,
+          selectedVehicleType,
+          selectedFuelType,
+          selectedRoute,
+          algorithm: optimizedResult.algorithm
+        });
+      }
+
     } catch (error) {
       console.error('Error calculating routes:', error);
       alert('An error occurred while calculating the routes. Please try again.');
@@ -228,6 +245,17 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
       garageLocation,
       disposalSite
     );
+    // Update stats when route selection changes
+    if (onRouteStatsChange && totalDistance > 0) {
+      onRouteStatsChange({
+        totalDistance,
+        alternativeTotalDistance,
+        selectedVehicleType,
+        selectedFuelType,
+        selectedRoute: routeType,
+        algorithm: usedAlgorithm
+      });
+    }
   };
 
   // Route selection UI with algorithm information
@@ -285,82 +313,6 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
       </div>
     </div>
   );
-
-  // Add this new component for the fuel cost modal
-  const FuelCostModal = ({ onClose, onSave, fuelCost, mileage }) => {
-    const [tempFuelCost, setTempFuelCost] = useState(fuelCost);
-    const [tempMileage, setTempMileage] = useState(mileage);
-
-    const handleSave = () => {
-      if (tempFuelCost > 0 && tempMileage > 0) {
-        onSave(tempFuelCost, tempMileage);
-        onClose();
-      } else {
-        alert('Please enter valid values for fuel cost and mileage');
-      }
-    };
-
-    return (
-      <div className="fixed inset-0 bg-black/20 backdrop-blur-sm z-[1000] flex items-center justify-center">
-        <div className="bg-white rounded-2xl shadow-xl p-6 max-w-sm w-full mx-4">
-          <div className="text-center mb-4">
-            <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <span className="text-2xl">⛽</span>
-            </div>
-            <h3 className="text-lg font-semibold text-gray-900">Fuel Cost Calculator</h3>
-            <p className="text-gray-700 mt-2">Enter fuel cost and vehicle mileage</p>
-          </div>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-800 mb-1">
-                Fuel Cost (₹/litre)
-              </label>
-              <input
-                type="number"
-                value={tempFuelCost}
-                onChange={(e) => setTempFuelCost(Number(e.target.value))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder:text-gray-500"
-                placeholder="Enter fuel cost"
-                min="0"
-                step="0.01"
-              />
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-800 mb-1">
-                Vehicle Mileage (km/litre)
-              </label>
-              <input
-                type="number"
-                value={tempMileage}
-                onChange={(e) => setTempMileage(Number(e.target.value))}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 placeholder:text-gray-500"
-                placeholder="Enter vehicle mileage"
-                min="0"
-                step="0.1"
-              />
-            </div>
-          </div>
-
-          <div className="flex gap-3 mt-6">
-            <button
-              onClick={onClose}
-              className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              className="flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-            >
-              Save
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   return (
     <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100/50 overflow-hidden">
@@ -485,66 +437,79 @@ const RouteOptimizer = ({ dustbins, onRouteCalculated, garageLocation, disposalS
           </div>
         )}
 
-        {totalDistance > 0 && (
-          <>
-            <div className="bg-white rounded-xl p-4 border border-gray-200">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <span className="text-xl">⛽</span>
-                  <h3 className="font-medium">Fuel Cost Analysis</h3>
-                </div>
-                <button
-                  onClick={() => setShowFuelModal(true)}
-                  className="px-3 py-1 bg-blue-100 text-blue-600 rounded-lg hover:bg-blue-200 transition-colors text-sm font-medium"
-                >
-                  Set Fuel Cost
-                </button>
-              </div>
-              
-              {fuelCost > 0 && mileage > 0 ? (
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-800">Fuel Cost:</span>
-                    <span className="font-medium text-gray-900">₹{fuelCost}/litre</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-800">Vehicle Mileage:</span>
-                    <span className="font-medium text-gray-900">{mileage} km/litre</span>
-                  </div>
-                  <div className="mt-4 p-3 bg-green-50 rounded-lg">
-                    <div className="flex justify-between items-center">
-                      <span className="text-green-700">Potential Savings:</span>
-                      <span className="text-lg font-bold text-green-700">₹{costSavings.toFixed(2)}</span>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-sm text-gray-700 text-center">
-                  Enter fuel cost and mileage to calculate potential savings
-                </p>
-              )}
-            </div>
-          </>
-        )}
+        {/* Vehicle Type Selector */}
+        <div className="bg-white rounded-xl p-4 border border-gray-200">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-xl">🚛</span>
+            <h3 className="font-medium text-gray-900">Vehicle Type</h3>
+          </div>
+          <select
+            value={selectedVehicleType}
+            onChange={(e) => {
+            setSelectedVehicleType(e.target.value);
+            if (onRouteStatsChange && totalDistance > 0) {
+              onRouteStatsChange({
+                totalDistance,
+                alternativeTotalDistance,
+                selectedVehicleType: e.target.value,
+                selectedFuelType,
+                selectedRoute,
+                algorithm: usedAlgorithm
+              });
+            }
+          }}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
+          >
+            {getAllVehicleTypes().map(type => (
+              <option key={type.id} value={type.id}>
+                {type.icon} {type.name} ({type.fuelEfficiency} {type.fuelType === 'electric' ? 'km/charge' : 'km/L'}, {type.capacity} kg capacity)
+              </option>
+            ))}
+          </select>
+        </div>
 
-        {showFuelModal && (
-          <FuelCostModal
-            onClose={() => setShowFuelModal(false)}
-            onSave={(newFuelCost, newMileage) => {
-              setFuelCost(newFuelCost);
-              setMileage(newMileage);
-              // Calculate savings
-              if (alternativeTotalDistance > totalDistance) {
-                const distanceDiff = alternativeTotalDistance - totalDistance;
-                const fuelUsed = distanceDiff / newMileage;
-                const savings = fuelUsed * newFuelCost;
-                setCostSavings(savings);
-              }
-            }}
-            fuelCost={fuelCost}
-            mileage={mileage}
-          />
-        )}
+        {/* Fuel Type Selector */}
+        <div className="bg-white rounded-xl p-4 border border-gray-200">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-xl">⛽</span>
+            <h3 className="font-medium text-gray-900">Fuel Type</h3>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { id: 'diesel', label: 'Diesel', price: JHARKHAND_FUEL_PRICES.diesel, icon: '🛢️' },
+              { id: 'petrol', label: 'Petrol', price: JHARKHAND_FUEL_PRICES.petrol, icon: '⛽' },
+              { id: 'electric', label: 'Electric', price: JHARKHAND_FUEL_PRICES.electric, icon: '⚡' }
+            ].map(fuel => (
+              <button
+                key={fuel.id}
+                onClick={() => {
+                  setSelectedFuelType(fuel.id);
+                  if (onRouteStatsChange && totalDistance > 0) {
+                    onRouteStatsChange({
+                      totalDistance,
+                      alternativeTotalDistance,
+                      selectedVehicleType,
+                      selectedFuelType: fuel.id,
+                      selectedRoute,
+                      algorithm: usedAlgorithm
+                    });
+                  }
+                }}
+                className={`p-2 rounded-lg text-center transition-all duration-200 border-2 ${
+                  selectedFuelType === fuel.id
+                    ? 'border-blue-500 bg-blue-50 shadow-md'
+                    : 'border-gray-200 bg-gray-50 hover:border-gray-300'
+                }`}
+              >
+                <span className="text-lg">{fuel.icon}</span>
+                <p className={`text-xs font-semibold mt-1 ${selectedFuelType === fuel.id ? 'text-blue-700' : 'text-gray-800'}`}>{fuel.label}</p>
+                <p className="text-[10px] text-gray-600">₹{fuel.price}/{fuel.id === 'electric' ? 'kWh' : 'L'}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+
+
 
         {/* Calculate Button */}
         <button

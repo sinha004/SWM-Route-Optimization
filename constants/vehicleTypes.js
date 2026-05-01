@@ -1,5 +1,23 @@
 // Vehicle Type Definitions and Constants
 
+// Current fuel prices in Jharkhand (as of May 2026)
+// Source: Indian Oil Corporation / Petroleum Ministry daily price revision
+export const JHARKHAND_FUEL_PRICES = {
+  petrol: 98.62,   // ₹ per litre (Ranchi, Jharkhand)
+  diesel: 93.36,   // ₹ per litre (Ranchi, Jharkhand)
+  electric: 8.0,   // ₹ per kWh (average commercial rate)
+  lastUpdated: '2026-05-01'
+};
+
+// CO₂ Emission Factors (IPCC 2006 Guidelines / India GHG Program)
+// These are direct (tank-to-wheel) combustion emission factors
+export const CO2_EMISSION_FACTORS = {
+  diesel: 2.68,    // kg CO₂ per litre of diesel
+  petrol: 2.31,    // kg CO₂ per litre of petrol
+  electric: 0.0,   // kg CO₂ per kWh (zero direct/tailpipe emissions)
+  source: 'IPCC 2006 Guidelines / India GHG Program'
+};
+
 export const VEHICLE_TYPES = {
   STANDARD: {
     id: 'standard',
@@ -111,14 +129,39 @@ export const getVehicleIcon = (id) => {
   return getVehicleTypeById(id).icon;
 };
 
-export const calculateFuelCost = (distance, vehicleTypeId, fuelPricePerLiter) => {
+/**
+ * Calculate fuel cost for a trip based on current Jharkhand fuel prices
+ * @param {number} distance - Distance in km
+ * @param {string} vehicleTypeId - Vehicle type identifier
+ * @param {string|null} fuelTypeOverride - Optional fuel type override ('petrol', 'diesel', 'electric')
+ * @returns {Object} { totalCost, fuelConsumed, fuelPrice, fuelType, unit }
+ */
+export const calculateFuelCost = (distance, vehicleTypeId, fuelTypeOverride = null) => {
   const vehicle = getVehicleTypeById(vehicleTypeId);
-  if (vehicle.fuelType === 'electric') {
-    // For electric vehicles, use electricity cost (assuming ₹8 per kWh, ~1 kWh per km)
-    return distance * 8; // INR
+  const activeFuelType = fuelTypeOverride || vehicle.fuelType;
+  
+  if (activeFuelType === 'electric') {
+    const pricePerKwh = JHARKHAND_FUEL_PRICES.electric;
+    const energyConsumed = distance * 1.0;
+    return {
+      totalCost: energyConsumed * pricePerKwh,
+      fuelConsumed: energyConsumed,
+      fuelPrice: pricePerKwh,
+      fuelType: 'electric',
+      unit: 'kWh'
+    };
   }
+  
+  const fuelPrice = JHARKHAND_FUEL_PRICES[activeFuelType] || JHARKHAND_FUEL_PRICES.diesel;
   const fuelConsumed = distance / vehicle.fuelEfficiency;
-  return fuelConsumed * fuelPricePerLiter;
+  
+  return {
+    totalCost: fuelConsumed * fuelPrice,
+    fuelConsumed: fuelConsumed,
+    fuelPrice: fuelPrice,
+    fuelType: activeFuelType,
+    unit: 'litres'
+  };
 };
 
 export const calculateMaintenanceCost = (distance, vehicleTypeId) => {
@@ -126,13 +169,42 @@ export const calculateMaintenanceCost = (distance, vehicleTypeId) => {
   return distance * vehicle.costPerKm;
 };
 
-export const calculateCO2Emissions = (distance, vehicleTypeId) => {
+/**
+ * Calculate CO₂ emissions for a trip using IPCC emission factors
+ * Formula: CO₂ (kg) = Fuel Consumed (litres) × Emission Factor (kg CO₂/litre)
+ * @param {number} distance - Distance in km
+ * @param {string} vehicleTypeId - Vehicle type identifier
+ * @param {string|null} fuelTypeOverride - Optional fuel type override ('petrol', 'diesel', 'electric')
+ * @returns {Object} { totalEmissions, fuelConsumed, emissionFactor, fuelType, equivalents }
+ */
+export const calculateCO2Emissions = (distance, vehicleTypeId, fuelTypeOverride = null) => {
   const vehicle = getVehicleTypeById(vehicleTypeId);
-  if (vehicle.fuelType === 'electric') {
-    return 0; // Zero direct emissions
+  const activeFuelType = fuelTypeOverride || vehicle.fuelType;
+  
+  if (activeFuelType === 'electric') {
+    return {
+      totalEmissions: 0,
+      fuelConsumed: 0,
+      emissionFactor: 0,
+      fuelType: 'electric',
+      equivalents: { treeDaysAbsorption: 0, carKmEquivalent: 0 }
+    };
   }
+  
+  const emissionFactor = CO2_EMISSION_FACTORS[activeFuelType] || CO2_EMISSION_FACTORS.diesel;
   const fuelConsumed = distance / vehicle.fuelEfficiency;
-  return fuelConsumed * vehicle.emissionFactor;
+  const totalEmissions = fuelConsumed * emissionFactor;
+  
+  return {
+    totalEmissions: totalEmissions,
+    fuelConsumed: fuelConsumed,
+    emissionFactor: emissionFactor,
+    fuelType: activeFuelType,
+    equivalents: {
+      treeDaysAbsorption: totalEmissions / 0.06,
+      carKmEquivalent: totalEmissions / 0.21
+    }
+  };
 };
 
 export const calculateTripDuration = (distance, vehicleTypeId) => {

@@ -18,7 +18,7 @@ const EnvironmentalDashboard = ({ dustbins, vehicles }) => {
   // Calculate total emissions
   const totalEmissions = trips.reduce((sum, trip) => {
     if (trip.distance && trip.vehicleType) {
-      return sum + calculateCO2Emissions(trip.distance, trip.vehicleType);
+      return sum + calculateCO2Emissions(trip.distance, trip.vehicleType).totalEmissions;
     }
     return sum;
   }, 0);
@@ -26,8 +26,8 @@ const EnvironmentalDashboard = ({ dustbins, vehicles }) => {
   // Calculate emissions saved through optimization
   const emissionsSaved = trips.reduce((sum, trip) => {
     if (trip.alternativeDistance && trip.distance && trip.vehicleType) {
-      const optimizedEmissions = calculateCO2Emissions(trip.distance, trip.vehicleType);
-      const alternativeEmissions = calculateCO2Emissions(trip.alternativeDistance, trip.vehicleType);
+      const optimizedEmissions = calculateCO2Emissions(trip.distance, trip.vehicleType).totalEmissions;
+      const alternativeEmissions = calculateCO2Emissions(trip.alternativeDistance, trip.vehicleType).totalEmissions;
       return sum + (alternativeEmissions - optimizedEmissions);
     }
     return sum;
@@ -299,11 +299,11 @@ const processEmissionsTrend = (trips) => {
       dailyData[date] = { date, emissions: 0, saved: 0 };
     }
     
-    const emissions = calculateCO2Emissions(trip.distance, trip.vehicleType);
+    const emissions = calculateCO2Emissions(trip.distance, trip.vehicleType).totalEmissions;
     dailyData[date].emissions += emissions;
     
     if (trip.alternativeDistance) {
-      const alternativeEmissions = calculateCO2Emissions(trip.alternativeDistance, trip.vehicleType);
+      const alternativeEmissions = calculateCO2Emissions(trip.alternativeDistance, trip.vehicleType).totalEmissions;
       dailyData[date].saved += (alternativeEmissions - emissions);
     }
   });
